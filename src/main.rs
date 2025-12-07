@@ -184,7 +184,7 @@ fn main() {
     let mut stats = BTreeMap::new();
     std::thread::scope(|scope| {
         let map = mmap(&f);
-        let nthreads = 1; // std::thread::available_parallelism().unwrap().get();
+        let nthreads = std::thread::available_parallelism().unwrap().get();
         let mut at = 0;
         let (tx, rx) = std::sync::mpsc::sync_channel(nthreads);
         let chunk_size = map.len() / nthreads;
