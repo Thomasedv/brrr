@@ -4,7 +4,6 @@
 #![feature(hasher_prefixfree_extras)]
 #![feature(ptr_cast_array)]
 
-use std::io::Write;
 use std::{
     borrow::Borrow,
     collections::{BTreeMap, HashMap, btree_map::Entry},
@@ -185,17 +184,17 @@ fn main() {
     let mut stats = BTreeMap::new();
     std::thread::scope(|scope| {
         let map = mmap(&f);
-        let nthreads = std::thread::available_parallelism().unwrap();
+        let nthreads = 1; // std::thread::available_parallelism().unwrap().get();
         let mut at = 0;
-        let (tx, rx) = std::sync::mpsc::sync_channel(nthreads.get());
+        let (tx, rx) = std::sync::mpsc::sync_channel(nthreads);
         let chunk_size = map.len() / nthreads;
-        for _ in 0..nthreads.get() {
+        for _ in 0..nthreads {
             let start = at;
             let end = (at + chunk_size).min(map.len());
             let end = if end == map.len() {
                 map.len()
             } else {
-                let newline_at = find_newline(&map[end..]).unwrap();
+                let newline_at = find_first_newline(&map[end..]).unwrap();
                 end + newline_at + 1
             };
             let map = &map[start..end];
@@ -229,10 +228,7 @@ fn main() {
 
 #[inline(never)]
 fn print(stats: BTreeMap<String, Stat>) {
-    let stdout = std::io::stdout();
-    let stdout = stdout.lock();
-    let mut writer = std::io::BufWriter::new(stdout);
-    write!(writer, "{{").unwrap();
+    println!("{{");
     let stats = BTreeMap::from_iter(
         stats
             .iter()
@@ -241,32 +237,90 @@ fn print(stats: BTreeMap<String, Stat>) {
     );
     let mut stats = stats.into_iter().peekable();
     while let Some((station, stat)) = stats.next() {
-        write!(
-            writer,
+        print!(
             "{station}={:.1}/{:.1}/{:.1}",
             (stat.min as f64) / 10.,
             (stat.sum as f64) / 10. / (stat.count as f64),
             (stat.max as f64) / 10.
-        )
-        .unwrap();
+        );
         if stats.peek().is_some() {
-            write!(writer, ", ").unwrap();
+            println!(", ");
         }
     }
-    write!(writer, "}}").unwrap();
+    print!("}}");
 }
 
 #[inline(never)]
 fn one(map: &[u8]) -> HashMap<StrVec, Stat, FastHasherBuilder> {
     let mut stats = HashMap::with_capacity_and_hasher(1_024, FastHasherBuilder);
-    let mut at = 0;
-    while at < map.len() {
-        let newline_at = at + unsafe { find_newline(&map[at..]).unwrap_unchecked() };
-        let line = unsafe { map.get_unchecked(at..newline_at) };
-        at = newline_at + 1;
-        let (station, temperature) = unsafe { split_at_semicolon(line) };
-        let t = parse_temperature(temperature);
-        update_stats(&mut stats, station, t);
+
+    let map_length = map.len();
+
+    let mut at1: usize = 0;
+    let mut at2 = find_last_newline(&map[..map_length / 3]);
+    let mut at3 = find_last_newline(&map[..(2 * map_length / 3)]);
+
+    // println!("{map_length}, {at1}, {at2}, {at3}");
+    let map1 = &map[..at2];
+    let map2 = &map[at2..at3];
+    let map3 = &map[at3..];
+
+    let map1_len = map1.len();
+    let map2_len = map2.len();
+    let map3_len = map3.len();
+    let map1_len_m1 = map1_len - 1;
+    let map2_len_m1 = map2_len - 1;
+    let map3_len_m1 = map3_len - 1;
+
+    at2 = 0;
+    at3 = 0;
+
+    loop {
+        let newline_at1 = at1 + unsafe { find_first_newline(&map1[at1..]).unwrap_unchecked() };
+        let newline_at2 = at2 + unsafe { find_first_newline(&map2[at2..]).unwrap_unchecked() };
+        let newline_at3 = at3 + unsafe { find_first_newline(&map3[at3..]).unwrap_unchecked() };
+
+        let line1 = unsafe { map1.get_unchecked(at1..newline_at1) };
+        let line2 = unsafe { map2.get_unchecked(at2..newline_at2) };
+        let line3 = unsafe { map3.get_unchecked(at3..newline_at3) };
+
+        at1 = (1 + newline_at1) * usize::from(newline_at1 < map1_len_m1)
+            + map1_len_m1 * usize::from(newline_at1 >= map1_len_m1);
+        at2 = (1 + newline_at2) * usize::from(newline_at2 < map2_len_m1)
+            + map2_len_m1 * usize::from(newline_at2 >= map2_len_m1);
+        at3 = (1 + newline_at3) * usize::from(newline_at3 < map3_len_m1)
+            + map3_len_m1 * usize::from(newline_at3 >= map3_len_m1);
+
+        if !line1.is_empty() && !line2.is_empty() && !line3.is_empty() {
+            for line in [line1, line2, line3] {
+                let (station, temperature) = unsafe { split_at_semicolon(line) };
+                let t = parse_temperature(temperature);
+                update_stats(&mut stats, station, t);
+            }
+            continue;
+        }
+
+        if !line1.is_empty() {
+            let (station, temperature) = unsafe { split_at_semicolon(line1) };
+            let t = parse_temperature(temperature);
+            update_stats(&mut stats, station, t);
+        }
+
+        if !line2.is_empty() {
+            let (station, temperature) = unsafe { split_at_semicolon(line2) };
+            let t = parse_temperature(temperature);
+            update_stats(&mut stats, station, t);
+        }
+
+        if !line3.is_empty() {
+            let (station, temperature) = unsafe { split_at_semicolon(line3) };
+            let t = parse_temperature(temperature);
+            update_stats(&mut stats, station, t);
+        }
+
+        if line1.is_empty() && line2.is_empty() && line3.is_empty() {
+            break;
+        }
     }
     stats
 }
@@ -299,7 +353,8 @@ unsafe fn split_at_semicolon(buffer: &[u8]) -> (&[u8], &[u8]) {
     }
 }
 
-pub fn find_newline(mut buffer: &[u8]) -> Option<usize> {
+#[inline]
+pub fn find_first_newline(mut buffer: &[u8]) -> Option<usize> {
     const LANES: usize = 32;
     const SPLAT: Simd<u8, LANES> = Simd::splat(b'\n');
 
@@ -316,6 +371,19 @@ pub fn find_newline(mut buffer: &[u8]) -> Option<usize> {
 
     let bytes = Simd::<u8, LANES>::load_or_default(buffer);
     bytes.simd_eq(SPLAT).first_set().map(|set| set + i)
+}
+
+#[inline]
+pub fn find_last_newline(buffer: &[u8]) -> usize {
+    const LANES: usize = 32;
+    const SPLAT: Simd<u8, LANES> = Simd::splat(b'\n');
+    let buffer_size = buffer.len();
+    let result = buffer.split_last_chunk::<LANES>();
+
+    // SAFETY: Newline is guaranteed to be in the first 32 characters, at least in this dataset :P
+    let bytes = Simd::<u8, LANES>::from_array(unsafe { *result.unwrap_unchecked().1 }).reverse();
+    let index = unsafe { bytes.simd_eq(SPLAT).first_set().unwrap_unchecked() };
+    buffer_size - index
 }
 
 #[inline]

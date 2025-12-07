@@ -2,3 +2,7 @@
 measurements.txt
 brrr*
 perf.*
+/measurements_fast.txt
+/measurements-100m.txt
+/.idea/vcs.xml
+/.idea/modules.xml
